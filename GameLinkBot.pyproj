@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>682c82ca-7e6f-46cd-92f7-cf1614086ac0</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>GameLinkBot.py</StartupFile>
+    <StartupFile>Bot.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -24,7 +24,13 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="GameLinkBot.py" />
+    <Compile Include="Bot.py" />
+    <Compile Include="Descriptor.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Distribution.py">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Content Include="Procfile" />
