@@ -1,2 +1,2 @@
 # GameLinkBot
-This bot sends game information to any user that reacts to a game title. The bot dynamically loads data from a private Discord channel.
+This bot allows adding and serving movie and game information at any user's will.
