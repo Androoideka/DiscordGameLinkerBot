@@ -3,19 +3,19 @@ from fuzzywuzzy import process
 from Descriptor import Descriptor
 from Descriptor import is_emoji
 from dateutil.tz import gettz
-from datetime import datetime
+from datetime import datetime, timedelta
 import dateutil.parser
 import asyncio
 import discord
 import os
 
 #commands:
-#add movie/game name \n icon \n description/date \n distribution
-#modify movie/game name -i/d value
-#remove movie/game name
-#send movie/game name [- emoji]
+#add movie/game name \n icon \n description/date \n distributions
+#modify/update movie/game name -i/d value
+#remove/delete movie/game name
+#send/dada movie/game name [- emoji]
 #rename movie/game name - newname
-#append emoji link \n field \n field
+#append movie/game name emoji link \n field \n field
 #repertoire x - y
 
 TOKEN = os.environ["TOKEN"]
@@ -25,7 +25,7 @@ GDCNAME = os.environ["GAME_DATA_CHANNEL"]
 GSCNAME = os.environ["SERVING_CHANNEL"]
 OWNERID = int(os.environ["OWNER"])
 
-tzinfos = { "CET": gettz("CET"), "PKT": gettz("Asia/Karachi"), "IST": gettz("Asia/Kolkata"), "GST": gettz("Asia/Dubai") }
+tzinfos = { "CET": gettz("CET"), "CEST": gettz("CET"), "PKT": gettz("Asia/Karachi"), "IST": gettz("Asia/Kolkata"), "GST": gettz("Asia/Dubai") }
 
 client = discord.Client()
 
@@ -35,41 +35,56 @@ gdc = None
 mdc = None
 gsc = None
 
+semaphore = 0
+
 gamedictionary = { }
 moviedictionary = { }
 
-async def load(media):
+async def load(channel):
     global gamedictionary
     global moviedictionary
 
-    if media == "game":
+    if channel == gdc:
         mediadict = gamedictionary
-        channel = gdc
-    elif media == "movie":
+    elif channel == mdc:
         mediadict = moviedictionary
-        channel = mdc
+    else:
+        return
 
     messageBundle = []
+    tasks = []
     async for message in channel.history():
         lines = message.content.split("\n")
         if await is_emoji(lines[0][0]):
             messageBundle.append(lines)
         else:
-            lines[2] = await handledparam(media, lines[2])
+            lines[2] = await handledparam(channel, lines[2])
             messageBundle.append(lines[1:])
             messageBundle.reverse()
             descriptor = Descriptor()
-            await Descriptor.load(descriptor, messageBundle)
+            tasks.append(asyncio.create_task(Descriptor.load(descriptor, messageBundle)))
             mediadict[lines[0]] = descriptor
             messageBundle = []
+    asyncio.gather(*tasks)
 
-async def save(mediadict):
-    if mediadict == gamedictionary:
-        channel = gdc
-    elif mediadict == moviedictionary:
-        channel = mdc
-    async for message in channel.history():
-        await message.delete()
+async def save(channel):
+    global semaphore
+
+    semaphore += 1
+    await asyncio.sleep(5)
+    semaphore -= 1
+    if semaphore > 0:
+        return
+
+    if channel == gdc:
+        mediadict = gamedictionary
+    elif channel == mdc:
+        mediadict = moviedictionary
+    else: 
+        return
+
+    await channel.purge()
+
     for key in mediadict.keys():
         descriptor = mediadict[key]
         messageBundle = await descriptor.save(key)
@@ -77,51 +92,63 @@ async def save(mediadict):
             await channel.send(message)
 
 async def getcorrectname(name, mediadict):
+    acronyms = { "".join([word[0] for word in x.split(" ")]):x for x in mediadict.keys()}
+
     nameslist = process.extract(name, mediadict.keys(), scorer = fuzz.ratio, limit = 5)
     if nameslist:
-        max = nameslist[0][0]
-        maxRatio = fuzz.partial_ratio(name, max[0])
+        if len(max(acronyms, key=len)) > len(name):
+            nameslist += process.extract(name, acronyms.keys(), scorer = fuzz.ratio, limit = 5)
+            nameslist = sorted(nameslist, key=lambda x: x[1], reverse = True)
+        maxMatch = nameslist[0][0]
+        maxRatio = fuzz.partial_ratio(name, maxMatch[0])
         for entry in nameslist:
             currentRatio = fuzz.partial_ratio(name, entry[0])
             if currentRatio > maxRatio:
-                max = entry[0]
+                maxMatch = entry[0]
                 maxRatio = currentRatio
-        return max
+        if maxMatch not in mediadict:
+            maxMatch = acronyms[maxMatch]
+        return maxMatch
 
-async def handledparam(media, parameter):
-    if media == "movie":
+async def handledparam(channel, parameter):
+    if channel == mdc:
         try:
             result = dateutil.parser.parse(parameter, tzinfos = tzinfos, dayfirst = True, fuzzy = True)
             result = result.replace(tzinfo=result.tzinfo or tzinfos["PKT"])
             return result
         except ValueError:
             return None
-    elif media == "game":
+    elif channel == gdc:
         return parameter
 
-async def add(descriptor, name, mediadict, remainder, media):
-    if len(remainder) < 3:
+async def add(descriptor, channel, param):
+    if len(param) < 3:
         return "Command is supposed to be gti add game/movie name\nicon\ndescription/date (You forgot the icon or description/date)"
-    remainder[2] = await handledparam(media, remainder[2])
-    if not remainder[2]:
-        return "Date is wrong"
-    await Descriptor.read(descriptor, remainder[1:])
-    mediadict[name] = descriptor
-    await save(mediadict)
 
-async def modify(descriptor, mediadict, param, media):
+    param[2] = await handledparam(channel, param[2])
+    if not param[2]:
+        return "Date is wrong"
+
+    await Descriptor.read(descriptor, param[1:])
+    await save(channel)
+
+async def modify(descriptor, channel, param):
     arg = param.split(" ", 1)
+
     if len(arg) < 2:
         return "Command is supposed to be gti modify game/movie name -d/i new value (you didn't specify a new value)"
+
     arg = arg[1]
     if param.startswith("i"):
         descriptor.icon = arg
-    if param.startswith("d"):
-        arg = await handledparam(media, arg)
+    elif param.startswith("d"):
+        arg = await handledparam(channel, arg)
         if not arg:
             return "Date is wrong"
         descriptor.datea = arg
-    await save(mediadict)
+    else:
+        return "Command is supposed to be gti modify game/movie name -d/i new value (You put something other than d or i)"
+    await save(channel)
 
 async def parse(command, channel):
     global gamedictionary
@@ -129,92 +156,82 @@ async def parse(command, channel):
 
     listofargs = command.split(" ", 2)
     if len(listofargs) < 3:
-        return "Command, media or name not specified"
+        return "Command, movie/game or name missing"
 
     listofargs[0] = listofargs[0].lower()
     listofargs[1] = listofargs[1].lower()
 
-    if (listofargs[0] != "add" 
-        and listofargs[0] != "modify"
-        and listofargs[0] != "update"
-        and listofargs[0] != "delete"
-        and listofargs[0] != "remove"
-        and listofargs[0] != "send"
-        and listofargs[0] != "dada"
-        and listofargs[0] != "rename"
-        and listofargs[0] != "append"):
-        return "Command doesn't exist"
-
-    if listofargs[1] == "game":
+    if "game" in listofargs[0:2]:
+        media = gdc
         mediadict = gamedictionary
-    elif listofargs[1] == "movie":
+    elif "movie" in listofargs[0:2]:
+        media = mdc
         mediadict = moviedictionary
     else:
-        return "Misspelled the word game or movie"
+        return "Didn't clarify whether it's movie or game"
 
-    remainder = listofargs[2]
-    remainder = remainder.split("\n")
+    remainder = listofargs[2].split("\n")
     name = remainder[0]
-    if listofargs[0] == "add":
+    if "add" in listofargs[0:2]:
         descriptor = Descriptor()
-        return await add(descriptor, name, mediadict, remainder, listofargs[1])
-    elif listofargs[0] == "modify" or listofargs[0] == "update":
-        twonames = name.split(" -")
-        if len(twonames) < 2:
-            return "Command is supposed to be gti modify game/movie name -d/i new value (You're missing a -d/i)"
-        name = await getcorrectname(twonames[0], mediadict)
-        if not name:
-            return "Name not found"
-        descriptor = mediadict[name]
-        return await modify(descriptor, mediadict, twonames[1], listofargs[1])
-    elif listofargs[0] == "remove" or listofargs[0] == "delete":
-        twonames = name.split(" - ")
-        name = await getcorrectname(twonames[0], mediadict)
-        if not name:
-            return "Name not found"
-        if len(twonames) < 2:
-            del mediadict[name]
-        else:
-            if twonames[1] not in mediadict[name].distributions:
-                return "Emoji not there"
-            else:
-                del mediadict[name].distributions[twonames[1]]
-        await save(mediadict)
-    elif listofargs[0] == "send" or listofargs[0] == "dada":
-        twonames = name.split(" - ")
-        name = await getcorrectname(twonames[0], mediadict)
-        if not name:
-            return "Name not found"
-        descriptor = mediadict[name]
-        if len(twonames) < 2:
-            await descriptor.showcasemessage(name, channel)
-        else:
-            embed = await descriptor.assembleembed(name, twonames[1])
-            if not embed:
-                return "Emoji not there"
-            await channel.send(embed=embed)
-    elif listofargs[0] == "rename":
-        twonames = name.split(" - ")
-        if len(twonames) < 2:
-            return "Command is supposed to be gti rename game/movie oldname - newname (You're missing the - separator)"
-        name = await getcorrectname(twonames[0], mediadict)
-        if not name:
-            return "Name not found"
-        descriptor = mediadict.pop(name)
-        mediadict[twonames[1]] = descriptor
-        await save(mediadict)
-    elif listofargs[0] == "append":
-        name = await getcorrectname(name, mediadict)
-        if not name:
-            return "Name not found"
-        descriptor = mediadict[name]
-        await descriptor.appendfrom(remainder, 1)
-        await save(mediadict)
+        mediadict[name] = descriptor
+        return await add(descriptor, media, remainder)
     else:
-        return "Misspelled the command word"
+        twonames = name.split(" -")
+        name = await getcorrectname(twonames[0], mediadict)
+        if not name:
+            return "Name not found"
+        elif "modify" in listofargs[0:2] or "update" in listofargs[0:2]:
+            if len(twonames) < 2:
+                return "Command is supposed to be gti modify game/movie name -d/i new value (You're missing a -d/i)"
+            descriptor = mediadict[name]
+            return await modify(descriptor, media, remainder)
+        elif "remove" in listofargs[0:2] or "delete" in listofargs[0:2]:
+            if len(twonames) < 2:
+                del mediadict[name]
+            else:
+                emoji = twonames[1].strip()
+                if emoji not in mediadict[name].distributions:
+                    return "Emoji not there"
+                else:
+                    del mediadict[name].distributions[emoji]
+            await save(media)
+        elif "send" in listofargs[0:2] or "dada" in listofargs[0:2]:
+            descriptor = mediadict[name]
+            if len(twonames) < 2:
+                await descriptor.showcasemessage(name, channel)
+            else:
+                emoji = twonames[1].strip()
+                embed = await descriptor.assembleembed(name, emoji)
+                if not embed:
+                    return "Emoji not there"
+                await channel.send(embed=embed)
+        elif "rename" in listofargs[0:2]:
+            if len(twonames) < 2:
+                return "Command is supposed to be gti rename game/movie oldname - newname (You're missing the - separator)"
+            newname = twonames[1].strip()
+            descriptor = mediadict.pop(name)
+            mediadict[newname] = descriptor
+            await save(media)
+        elif "append" in listofargs[0:2]:
+            descriptor = mediadict[name]
+            await descriptor.appendfrom(remainder, 1)
+            await save(media)
+        else:
+            return "Command doesn't exist"
+
+async def clearolder():
+    sortedArray = sorted(moviedictionary, key = lambda name: moviedictionary[name].datea)
+    timezone = tzinfos["PKT"]
+    d = datetime.now(timezone) - timedelta(days=1)
+    for key in sortedArray:
+        if moviedictionary[key].datea < d:
+            del moviedictionary[key]
+    sortedArray[:] = [x for x in sortedArray if x in moviedictionary]
+    return sortedArray
 
 async def repertoire(args, channel):
-    span = args.split(" - ")
+    span = args.split("-")
     if len(span) < 2:
         return "Command is supposed to be gti repertoire number - number (You're missing the - separator)"
     try:
@@ -222,18 +239,18 @@ async def repertoire(args, channel):
         end = int(span[1])
     except ValueError:
         return "Command doesn't contain numbers"
-    sortedArray = sorted(moviedictionary, key = lambda name: moviedictionary[name].datea)
+    sortedArray = await clearolder()
+    savingtask = asyncio.create_task(save(mdc))
     for key in sortedArray[start:end]:
         await moviedictionary[key].showcasemessage(key, channel)
+    await savingtask
 
 async def reset():
     global gamedictionary
     global moviedictionary
 
-    async for message in gdc.history():
-        await message.delete()
-    async for message in mdc.history():
-        await message.delete()
+    await gdc.purge()
+    await mdc.purge()
 
     gamedictionary = { }
     moviedictionary = { }
@@ -247,16 +264,15 @@ async def setchannels():
     mdc = discord.utils.get(client.get_all_channels(), guild__name=GUILD, name=MDCNAME)
     gsc = discord.utils.get(client.get_all_channels(), guild__name=GUILD, name=GSCNAME)
 
-    await load("game")
-    await load("movie")
+    await load(gdc)
+    await load(mdc)
+    await gsc.purge()
 
 async def start():
     global owner
 
     await setchannels()
     owner = client.get_user(OWNERID)
-    async for message in gsc.history():
-        await message.delete()
     for game in gamedictionary.keys():
         await gamedictionary[game].showcasemessage(game, gsc)
 
@@ -265,21 +281,21 @@ async def on_message(message):
     if message.author == client.user:
         return
     if message.content.startswith('gti'):
-        command = message.content[4:]
+        command = message.content[4:].split(" ", 1)
+        command[0] = command[0].lower()
         if len(command) == 0:
             await message.channel.send("Available commands: add, update/modify, append, remove/delete, rename, refresh.\nOwner only: reset")
-        elif message.author == owner and command.lower().startswith('reset'):
+        elif message.author == owner and command[0] == 'reset':
             await reset()
             await start()
-        elif command.lower().startswith('refresh'):
+        elif command[0] == 'refresh':
             await start()
-        elif command.lower().startswith('repertoire'):
-            fragment = command[11:]
-            result = await repertoire(fragment, message.channel)
+        elif command[0] == 'repertoire':
+            result = await repertoire(command[1], message.channel)
             if result:
                 await message.channel.send(result)
         else:
-            result = await parse(command, message.channel)
+            result = await parse(message.content[4:], message.channel)
             if result:
                 await message.channel.send(result)
 
